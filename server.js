@@ -2,14 +2,37 @@ require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
+const compression = require("compression");
+const rateLimit = require("express-rate-limit");
 const { Pool } = require("pg");
 
 const app = express();
 
-app.use(cors());
+app.use(helmet());
+app.use(compression());
+
+app.use(cors({
+  origin: "*"
+}));
+
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
+
+/*
+--------------------------------
+RATE LIMIT (ANTI SCRAPING)
+--------------------------------
+*/
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  message: "Too many requests. Please try again later."
+});
+
+app.use("/api/", apiLimiter);
 
 /*
 --------------------------------
@@ -24,9 +47,8 @@ const pool = new Pool({
 
 /*
 --------------------------------
-ANTI SCRAPING PROTECTION
+API KEY SECURITY
 --------------------------------
-Prevents automated price scraping
 */
 
 const apiKeyMiddleware = (req, res, next) => {
@@ -35,6 +57,7 @@ const apiKeyMiddleware = (req, res, next) => {
 
   if (!apiKey || apiKey !== process.env.API_SECRET_KEY) {
     return res.status(403).json({
+      success: false,
       error: "Unauthorized API access"
     });
   }
@@ -50,7 +73,7 @@ ROOT ENDPOINT
 
 app.get("/", (req, res) => {
   res.json({
-    message: "SolarPV.store backend is running.",
+    message: "SolarPV.store backend running",
     status: "OK"
   });
 });
@@ -68,6 +91,7 @@ app.get("/db-test", async (req, res) => {
     const result = await pool.query("SELECT NOW()");
 
     res.json({
+      success: true,
       message: "Database connected",
       time: result.rows[0]
     });
@@ -75,6 +99,7 @@ app.get("/db-test", async (req, res) => {
   } catch (err) {
 
     res.status(500).json({
+      success: false,
       error: "Database connection failed"
     });
 
@@ -97,7 +122,7 @@ app.post("/api/ai-recommendations", apiKeyMiddleware, async (req, res) => {
       subCategory,
       brand,
       buyerCountry,
-      systemSize
+      systemSizeKW
     } = req.body;
 
     const query = `
@@ -135,14 +160,17 @@ app.post("/api/ai-recommendations", apiKeyMiddleware, async (req, res) => {
     const listings = result.rows;
 
     if (!listings.length) {
+
       return res.json({
-        message: "No suppliers available"
+        success: false,
+        message: "No suppliers found"
       });
+
     }
 
     /*
     --------------------------------
-    TRUST SCORE CALCULATION
+    TRUST SCORE
     --------------------------------
     */
 
@@ -196,13 +224,88 @@ app.post("/api/ai-recommendations", apiKeyMiddleware, async (req, res) => {
         b.deliveryreliability - a.deliveryreliability
       )[0];
 
+    /*
+    --------------------------------
+    BOQ CALCULATION (B2C ONLY)
+    --------------------------------
+    */
+
+    let boq = null;
+
+    if (systemSizeKW) {
+
+      const avgPanelWatt = 550;
+
+      const panels = Math.ceil((systemSizeKW * 1000) / avgPanelWatt);
+
+      const inverterKW = (systemSizeKW * 1.2).toFixed(2);
+
+      const batteryKWh = (systemSizeKW * 4).toFixed(2);
+
+      const totalPrice =
+        panels * aiRecommended.price;
+
+      boq = {
+        panels,
+        inverterKW,
+        batteryKWh,
+        totalPrice
+      };
+
+    }
+
+    /*
+    --------------------------------
+    RESPONSE
+    --------------------------------
+    */
+
     res.json({
 
-      aiRecommendedSupplier: aiRecommended,
+      success: true,
 
-      bestPriceOption: bestPrice,
+      data: {
 
-      trustedSupplier: trustedSupplier
+        recommendations: [
+
+          {
+            type: "ai_recommended",
+            productId: aiRecommended.product_id,
+            productName: aiRecommended.name,
+            price: aiRecommended.price,
+            sellerName: aiRecommended.company_name,
+            sellerTier: aiRecommended.sellertier,
+            deliveryDays: aiRecommended.delivery_days,
+            quantity: 1
+          },
+
+          {
+            type: "best_price",
+            productId: bestPrice.product_id,
+            productName: bestPrice.name,
+            price: bestPrice.price,
+            sellerName: bestPrice.company_name,
+            sellerTier: bestPrice.sellertier,
+            deliveryDays: bestPrice.delivery_days,
+            quantity: 1
+          },
+
+          {
+            type: "trusted_supplier",
+            productId: trustedSupplier.product_id,
+            productName: trustedSupplier.name,
+            price: trustedSupplier.price,
+            sellerName: trustedSupplier.company_name,
+            sellerTier: trustedSupplier.sellertier,
+            deliveryDays: trustedSupplier.delivery_days,
+            quantity: 1
+          }
+
+        ],
+
+        boq
+
+      }
 
     });
 
@@ -211,6 +314,7 @@ app.post("/api/ai-recommendations", apiKeyMiddleware, async (req, res) => {
     console.error(error);
 
     res.status(500).json({
+      success: false,
       error: "AI recommendation failed"
     });
 
@@ -252,6 +356,7 @@ app.post("/api/cart/add", apiKeyMiddleware, async (req, res) => {
     console.error(error);
 
     res.status(500).json({
+      success: false,
       error: "Cart insert failed"
     });
 
@@ -277,6 +382,7 @@ app.get("/api/cart", apiKeyMiddleware, async (req, res) => {
     );
 
     res.json({
+      success: true,
       cart: result.rows
     });
 
@@ -285,6 +391,7 @@ app.get("/api/cart", apiKeyMiddleware, async (req, res) => {
     console.error(error);
 
     res.status(500).json({
+      success: false,
       error: "Cart retrieval failed"
     });
 
