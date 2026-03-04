@@ -8,60 +8,45 @@ const slowDown = require("express-slow-down");
 const { Pool } = require("pg");
 
 const app = express();
-
-// Railway is a proxy environment, we must trust it for Rate Limiting to work
-app.set('trust proxy', 1);
+app.set('trust proxy', 1); // Crucial for Railway proxy networking
 
 app.use(helmet());
 app.use(compression());
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-/* --- PROTECTION --- */
-const apiLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 60,
-  standardHeaders: true,
-  legacyHeaders: false
-});
-const speedLimiter = slowDown({
-  windowMs: 60 * 1000,
-  delayAfter: 20,
-  delayMs: (hits) => 500
-});
+// Protection Logic
+const apiLimiter = rateLimit({ windowMs: 60 * 1000, max: 60 });
+const speedLimiter = slowDown({ windowMs: 60 * 1000, delayAfter: 20, delayMs: (hits) => 500 });
 app.use("/api/", apiLimiter, speedLimiter);
 
-/* --- DB CONNECTION --- */
+// DB Connection
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-/* --- AUTH MIDDLEWARE --- */
 const apiKeyMiddleware = (req, res, next) => {
   const apiKey = req.headers["x-api-key"];
   if (!apiKey || apiKey !== process.env.API_SECRET_KEY) {
-    return res.status(403).json({ success: false, error: "Unauthorized access" });
+    return res.status(403).json({ success: false, error: "Unauthorized" });
   }
   next();
 };
 
-/* --- ENDPOINTS --- */
-app.get("/", (req, res) => {
-  res.status(200).json({ message: "SolarPV.store Backend Live", status: "OK" });
-});
+// Endpoints
+app.get("/", (req, res) => res.status(200).json({ message: "SolarPV Backend Online", status: "OK" }));
 
 app.get("/db-test", async (req, res) => {
   try {
     const result = await pool.query("SELECT NOW()");
-    res.json({ success: true, message: "Database connected", time: result.rows[0] });
+    res.json({ success: true, time: result.rows[0] });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Database connection failed" });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// AI RECOMMENDATION ENGINE (Full Original Logic)
+/* AI RECOMMENDATION ENGINE (Full Logic) */
 app.post("/api/ai-recommendations", apiKeyMiddleware, async (req, res) => {
   try {
     const { category, subCategory, brand, buyerCountry, systemSizeKW } = req.body;
@@ -86,7 +71,6 @@ app.post("/api/ai-recommendations", apiKeyMiddleware, async (req, res) => {
       return { ...item, totalScore };
     });
     scoredListings.sort((a, b) => b.totalScore - a.totalScore);
-    
     const ai = scoredListings[0];
     const best = [...listings].sort((a, b) => a.price - b.price)[0];
     const trust = [...listings].sort((a, b) => b.deliveryreliability - a.deliveryreliability)[0];
@@ -102,32 +86,11 @@ app.post("/api/ai-recommendations", apiKeyMiddleware, async (req, res) => {
       { type: "best_price", productId: best.product_id, productName: best.name, price: best.price, sellerName: best.company_name, sellerTier: best.sellertier, deliveryDays: best.delivery_days, quantity: 1 },
       { type: "trusted_supplier", productId: trust.product_id, productName: trust.name, price: trust.price, sellerName: trust.company_name, sellerTier: trust.sellertier, deliveryDays: trust.delivery_days, quantity: 1 }
     ], boq } });
-  } catch (err) { res.status(500).json({ success: false, error: "AI Engine error" }); }
+  } catch (err) { res.status(500).json({ success: false, error: "AI error" }); }
 });
 
-app.post("/api/cart/add", apiKeyMiddleware, async (req, res) => {
-  try {
-    const { userId, productId, sellerId, price } = req.body;
-    await pool.query("INSERT INTO cart_items (user_id, product_id, seller_id, price) VALUES ($1,$2,$3,$4)", [userId, productId, sellerId, price]);
-    res.json({ success: true, message: "Added" });
-  } catch (err) { res.status(500).json({ success: false, error: "Cart failure" }); }
-});
-
-app.get("/api/cart", apiKeyMiddleware, async (req, res) => {
-  try {
-    const { userId } = req.query;
-    const result = await pool.query("SELECT * FROM cart_items WHERE user_id = $1", [userId]);
-    res.json({ success: true, cart: result.rows });
-  } catch (err) { res.status(500).json({ success: false, error: "Cart failure" }); }
-});
-
-/* --- START SERVER --- */
-const PORT = process.env.PORT || 3000; 
-/* --- START SERVER --- */
-// DO NOT hardcode 8080. Railway assigns a dynamic port.
-const PORT = process.env.PORT || 3000; 
-
-// You must bind to "0.0.0.0" so the Railway proxy can reach the container
+// START SERVER (MANDATORY RAILWAY BINDING)
+const PORT = process.env.PORT || 3000;
 app.listen(Number(PORT), "0.0.0.0", () => {
-  console.log(`SolarPV Backend is live and listening on port ${PORT}`);
+  console.log(`SolarPV Backend is live on port ${PORT}`);
 });
