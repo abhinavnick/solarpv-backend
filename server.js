@@ -5,6 +5,7 @@ const cors = require("cors");
 const helmet = require("helmet");
 const compression = require("compression");
 const rateLimit = require("express-rate-limit");
+const slowDown = require("express-slow-down");
 const { Pool } = require("pg");
 
 const app = express();
@@ -33,6 +34,20 @@ const apiLimiter = rateLimit({
 });
 
 app.use("/api/", apiLimiter);
+
+/*
+--------------------------------
+BOT SLOWDOWN PROTECTION
+--------------------------------
+*/
+
+const speedLimiter = slowDown({
+  windowMs: 60 * 1000,
+  delayAfter: 20,
+  delayMs: 500
+});
+
+app.use("/api/", speedLimiter);
 
 /*
 --------------------------------
@@ -170,7 +185,7 @@ app.post("/api/ai-recommendations", apiKeyMiddleware, async (req, res) => {
 
     /*
     --------------------------------
-    TRUST SCORE
+    TRUST SCORE CALCULATION
     --------------------------------
     */
 
@@ -216,9 +231,7 @@ app.post("/api/ai-recommendations", apiKeyMiddleware, async (req, res) => {
     scoredListings.sort((a, b) => b.totalScore - a.totalScore);
 
     const aiRecommended = scoredListings[0];
-
     const bestPrice = [...listings].sort((a, b) => a.price - b.price)[0];
-
     const trustedSupplier =
       [...listings].sort((a, b) =>
         b.deliveryreliability - a.deliveryreliability
@@ -226,7 +239,7 @@ app.post("/api/ai-recommendations", apiKeyMiddleware, async (req, res) => {
 
     /*
     --------------------------------
-    BOQ CALCULATION (B2C ONLY)
+    BOQ CALCULATION (B2C)
     --------------------------------
     */
 
@@ -237,13 +250,9 @@ app.post("/api/ai-recommendations", apiKeyMiddleware, async (req, res) => {
       const avgPanelWatt = 550;
 
       const panels = Math.ceil((systemSizeKW * 1000) / avgPanelWatt);
-
       const inverterKW = (systemSizeKW * 1.2).toFixed(2);
-
       const batteryKWh = (systemSizeKW * 4).toFixed(2);
-
-      const totalPrice =
-        panels * aiRecommended.price;
+      const totalPrice = panels * aiRecommended.price;
 
       boq = {
         panels,
@@ -253,12 +262,6 @@ app.post("/api/ai-recommendations", apiKeyMiddleware, async (req, res) => {
       };
 
     }
-
-    /*
-    --------------------------------
-    RESPONSE
-    --------------------------------
-    */
 
     res.json({
 
