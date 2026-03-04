@@ -123,6 +123,11 @@ app.get("/api/cart", apiKeyMiddleware, async (req, res) => {
 
 /* --- START SERVER --- */
 const PORT = process.env.PORT || 3000; 
+/* --- START SERVER --- */
+// DO NOT hardcode 8080. Railway assigns a dynamic port.
+const PORT = process.env.PORT || 3000; 
+
+// You must bind to "0.0.0.0" so the Railway proxy can reach the container
 app.listen(Number(PORT), "0.0.0.0", () => {
-  console.log(`SolarPV Backend is live on 0.0.0.0:${PORT}`);
+  console.log(`SolarPV Backend is live and listening on port ${PORT}`);
 });
