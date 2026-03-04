@@ -2,6 +2,9 @@
   "name": "solarpv-backend",
   "version": "1.0.0",
   "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node server.js"
   },
@@ -15,3 +18,4 @@
     "helmet": "^7.1.0",
     "pg": "^8.11.3"
   }
+}
