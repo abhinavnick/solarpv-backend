@@ -28,10 +28,26 @@ const pool = new Pool({
 
 const apiKeyMiddleware = (req, res, next) => {
   const apiKey = req.headers["x-api-key"];
-  if (!apiKey || apiKey !== process.env.API_SECRET_KEY) {
-    return res.status(403).json({ success: false, error: "Unauthorized" });
+  const origin = req.headers.origin || "";
+  const referer = req.headers.referer || "";
+
+  const allowedPreview =
+    origin.includes("wix") ||
+    referer.includes("wix") ||
+    origin.includes("editor") ||
+    referer.includes("editor");
+
+  // Allow valid API key
+  if (apiKey && apiKey === process.env.API_SECRET_KEY) {
+    return next();
   }
-  next();
+
+  // Allow Wix preview/editor calls without key
+  if (allowedPreview) {
+    return next();
+  }
+
+  return res.status(403).json({ success: false, error: "Unauthorized" });
 };
 
 // Endpoints
