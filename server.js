@@ -9,24 +9,35 @@ const { Pool } = require("pg");
 
 const app = express();
 
-// Middleware
+// Railway is a proxy environment, we must trust it for Rate Limiting to work
+app.set('trust proxy', 1);
+
 app.use(helmet());
 app.use(compression());
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-// Protection
-const apiLimiter = rateLimit({ windowMs: 60 * 1000, max: 60 });
-const speedLimiter = slowDown({ windowMs: 60 * 1000, delayAfter: 20, delayMs: (hits) => 500 });
+/* --- PROTECTION --- */
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false
+});
+const speedLimiter = slowDown({
+  windowMs: 60 * 1000,
+  delayAfter: 20,
+  delayMs: (hits) => 500
+});
 app.use("/api/", apiLimiter, speedLimiter);
 
-// DB Connection
+/* --- DB CONNECTION --- */
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// Auth Middleware
+/* --- AUTH MIDDLEWARE --- */
 const apiKeyMiddleware = (req, res, next) => {
   const apiKey = req.headers["x-api-key"];
   if (!apiKey || apiKey !== process.env.API_SECRET_KEY) {
@@ -35,8 +46,10 @@ const apiKeyMiddleware = (req, res, next) => {
   next();
 };
 
-// Endpoints
-app.get("/", (req, res) => res.json({ message: "SolarPV.store running", status: "OK" }));
+/* --- ENDPOINTS --- */
+app.get("/", (req, res) => {
+  res.status(200).json({ message: "SolarPV.store Backend Live", status: "OK" });
+});
 
 app.get("/db-test", async (req, res) => {
   try {
@@ -48,8 +61,7 @@ app.get("/db-test", async (req, res) => {
   }
 });
 
-/* AI RECOMMENDATION ENGINE (Full Logic)
-*/
+// AI RECOMMENDATION ENGINE (Full Original Logic)
 app.post("/api/ai-recommendations", apiKeyMiddleware, async (req, res) => {
   try {
     const { category, subCategory, brand, buyerCountry, systemSizeKW } = req.body;
@@ -73,8 +85,8 @@ app.post("/api/ai-recommendations", apiKeyMiddleware, async (req, res) => {
       const totalScore = (item.country === buyerCountry ? 40 : 10) + (item.delivery_days <= 3 ? 20 : 5) + trustScore + (100 / item.price);
       return { ...item, totalScore };
     });
-
     scoredListings.sort((a, b) => b.totalScore - a.totalScore);
+    
     const ai = scoredListings[0];
     const best = [...listings].sort((a, b) => a.price - b.price)[0];
     const trust = [...listings].sort((a, b) => b.deliveryreliability - a.deliveryreliability)[0];
@@ -82,7 +94,7 @@ app.post("/api/ai-recommendations", apiKeyMiddleware, async (req, res) => {
     let boq = null;
     if (systemSizeKW) {
       const panels = Math.ceil((systemSizeKW * 1000) / 550);
-      boq = { panels, inverterKW: (systemSizeKW * 1.2).toFixed(2), batteryKWh: (systemSizeKW * 4).toFixed(2), totalPrice: panels * ai.price };
+      boq = { panels, inverterKW: (systemSizeKW * 1.2).toFixed(2), batteryKWh: (systemSizeKW * 4).toFixed(2), totalPrice: (panels * ai.price).toFixed(2) };
     }
 
     res.json({ success: true, data: { recommendations: [
@@ -93,13 +105,12 @@ app.post("/api/ai-recommendations", apiKeyMiddleware, async (req, res) => {
   } catch (err) { res.status(500).json({ success: false, error: "AI Engine error" }); }
 });
 
-// Cart Logic
 app.post("/api/cart/add", apiKeyMiddleware, async (req, res) => {
   try {
     const { userId, productId, sellerId, price } = req.body;
     await pool.query("INSERT INTO cart_items (user_id, product_id, seller_id, price) VALUES ($1,$2,$3,$4)", [userId, productId, sellerId, price]);
     res.json({ success: true, message: "Added" });
-  } catch (err) { res.status(500).json({ success: false, error: "Cart failed" }); }
+  } catch (err) { res.status(500).json({ success: false, error: "Cart failure" }); }
 });
 
 app.get("/api/cart", apiKeyMiddleware, async (req, res) => {
@@ -107,11 +118,11 @@ app.get("/api/cart", apiKeyMiddleware, async (req, res) => {
     const { userId } = req.query;
     const result = await pool.query("SELECT * FROM cart_items WHERE user_id = $1", [userId]);
     res.json({ success: true, cart: result.rows });
-  } catch (err) { res.status(500).json({ success: false, error: "Cart failed" }); }
+  } catch (err) { res.status(500).json({ success: false, error: "Cart failure" }); }
 });
 
-// START SERVER (Railway Auto-Detection)
-const PORT = process.env.PORT || 3000;
+/* --- START SERVER --- */
+const PORT = process.env.PORT || 3000; 
 app.listen(Number(PORT), "0.0.0.0", () => {
-  console.log(`SolarPV Backend is live and listening on port ${PORT}`);
+  console.log(`SolarPV Backend is live on 0.0.0.0:${PORT}`);
 });
