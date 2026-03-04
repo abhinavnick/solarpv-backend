@@ -1,7 +1,6 @@
 {
   "name": "solarpv-backend",
   "version": "1.0.0",
-  "description": "SolarPV.store backend API",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
