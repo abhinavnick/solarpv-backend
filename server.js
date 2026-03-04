@@ -9,92 +9,61 @@ const { Pool } = require("pg");
 
 const app = express();
 
-/* --------------------------------
-SECURITY & CORE MIDDLEWARE
---------------------------------
-*/
+// SECURITY MIDDLEWARE
 app.use(helmet());
 app.use(compression());
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-// Railway environment uses process.env.PORT
-const PORT = process.env.PORT || 3000;
-
-/* --------------------------------
-RATE LIMIT & BOT PROTECTION
---------------------------------
-*/
+// RATE LIMIT (ANTI SCRAPING)
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 60,
   standardHeaders: true,
-  legacyHeaders: false,
-  message: "Too many requests. Please try again later."
+  legacyHeaders: false
 });
 app.use("/api/", apiLimiter);
 
+// BOT SLOWDOWN
 const speedLimiter = slowDown({
   windowMs: 60 * 1000,
   delayAfter: 20,
-  delayMs: (hits) => 500 // Corrected for version 2.x/3.x compatibility
+  delayMs: (hits) => 500
 });
 app.use("/api/", speedLimiter);
 
-/* --------------------------------
-POSTGRES CONNECTION (Optimized for Railway)
---------------------------------
-*/
+// POSTGRES CONNECTION
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false } // Required for Railway self-signed certs
+  ssl: { rejectUnauthorized: false }
 });
 
-/* --------------------------------
-API KEY SECURITY
---------------------------------
-*/
+// API KEY MIDDLEWARE
 const apiKeyMiddleware = (req, res, next) => {
   const apiKey = req.headers["x-api-key"];
   if (!apiKey || apiKey !== process.env.API_SECRET_KEY) {
-    return res.status(403).json({
-      success: false,
-      error: "Unauthorized API access"
-    });
+    return res.status(403).json({ success: false, error: "Unauthorized access" });
   }
   next();
 };
 
-/* --------------------------------
-ENDPOINTS (Root & DB Health)
---------------------------------
-*/
-app.get("/", (req, res) => {
-  res.json({ message: "SolarPV.store backend running", status: "OK" });
-});
+// ENDPOINTS
+app.get("/", (req, res) => res.json({ message: "SolarPV.store running", status: "OK" }));
 
 app.get("/db-test", async (req, res) => {
   try {
     const result = await pool.query("SELECT NOW()");
-    res.json({
-      success: true,
-      message: "Database connected",
-      time: result.rows[0]
-    });
+    res.json({ success: true, message: "Database connected", time: result.rows[0] });
   } catch (err) {
-    console.error("DB Connection Error:", err);
-    res.status(500).json({ success: false, error: "Database connection failed" });
+    console.error(err);
+    res.status(500).json({ success: false, error: "Database failed" });
   }
 });
 
-/* --------------------------------
-AI RECOMMENDATION ENGINE (Full Logic)
---------------------------------
-*/
+// AI RECOMMENDATION ENGINE (Full Logic Restored)
 app.post("/api/ai-recommendations", apiKeyMiddleware, async (req, res) => {
   try {
     const { category, subCategory, brand, buyerCountry, systemSizeKW } = req.body;
-
     const query = `
       SELECT p.id as product_id, p.name, p.brand, p.category, p.sub_category, 
              l.price, l.stock, l.delivery_days, s.id as seller_id, 
@@ -105,91 +74,57 @@ app.post("/api/ai-recommendations", apiKeyMiddleware, async (req, res) => {
       JOIN sellers s ON l.sellerid = s.id
       WHERE p.category = $1 AND p.sub_category = $2 AND p.brand = $3 AND l.stock > 0
     `;
-
     const result = await pool.query(query, [category, subCategory, brand]);
     const listings = result.rows;
-
-    if (!listings.length) {
-      return res.json({ success: false, message: "No suppliers found" });
-    }
+    if (!listings.length) return res.json({ success: false, message: "No suppliers found" });
 
     const tierWeight = { Elite: 4, Gold: 3, Silver: 2, Bronze: 1 };
-
     const scoredListings = listings.map(item => {
-      const trustScore = (item.deliveryreliability * 0.4) + 
-                         ((tierWeight[item.sellertier] || 1) * 20 * 0.3) + 
-                         (item.transactionvolume * 0.2) + 
-                         ((item.escrowenabled ? 10 : 0) * 0.1);
-
+      const trustScore = (item.deliveryreliability * 0.4) + ((tierWeight[item.sellertier] || 1) * 20 * 0.3) + (item.transactionvolume * 0.2) + ((item.escrowenabled ? 10 : 0) * 0.1);
       const locationScore = item.country === buyerCountry ? 40 : 10;
       const deliveryScore = item.delivery_days <= 3 ? 20 : item.delivery_days <= 7 ? 15 : 5;
-      const priceScore = 100 / item.price;
-      const totalScore = locationScore + deliveryScore + trustScore + priceScore;
-
+      const totalScore = locationScore + deliveryScore + trustScore + (100 / item.price);
       return { ...item, totalScore };
     });
 
     scoredListings.sort((a, b) => b.totalScore - a.totalScore);
-    const aiRecommended = scoredListings[0];
-    const bestPrice = [...listings].sort((a, b) => a.price - b.price)[0];
-    const trustedSupplier = [...listings].sort((a, b) => b.deliveryreliability - a.deliveryreliability)[0];
+    const ai = scoredListings[0];
+    const best = [...listings].sort((a, b) => a.price - b.price)[0];
+    const trust = [...listings].sort((a, b) => b.deliveryreliability - a.deliveryreliability)[0];
 
     let boq = null;
     if (systemSizeKW) {
-      const avgPanelWatt = 550;
-      const panels = Math.ceil((systemSizeKW * 1000) / avgPanelWatt);
-      boq = {
-        panels,
-        inverterKW: (systemSizeKW * 1.2).toFixed(2),
-        batteryKWh: (systemSizeKW * 4).toFixed(2),
-        totalPrice: panels * aiRecommended.price
-      };
+      const panels = Math.ceil((systemSizeKW * 1000) / 550);
+      boq = { panels, inverterKW: (systemSizeKW * 1.2).toFixed(2), batteryKWh: (systemSizeKW * 4).toFixed(2), totalPrice: panels * ai.price };
     }
 
-    res.json({
-      success: true,
-      data: {
-        recommendations: [
-          { type: "ai_recommended", productId: aiRecommended.product_id, productName: aiRecommended.name, price: aiRecommended.price, sellerName: aiRecommended.company_name, sellerTier: aiRecommended.sellertier, deliveryDays: aiRecommended.delivery_days, quantity: 1 },
-          { type: "best_price", productId: bestPrice.product_id, productName: bestPrice.name, price: bestPrice.price, sellerName: bestPrice.company_name, sellerTier: bestPrice.sellertier, deliveryDays: bestPrice.delivery_days, quantity: 1 },
-          { type: "trusted_supplier", productId: trustedSupplier.product_id, productName: trustedSupplier.name, price: trustedSupplier.price, sellerName: trustedSupplier.company_name, sellerTier: trustedSupplier.sellertier, deliveryDays: trustedSupplier.delivery_days, quantity: 1 }
-        ],
-        boq
-      }
-    });
-  } catch (error) {
-    console.error("Recommendation Error:", error);
-    res.status(500).json({ success: false, error: "AI recommendation failed" });
-  }
+    res.json({ success: true, data: { recommendations: [
+      { type: "ai_recommended", productId: ai.product_id, productName: ai.name, price: ai.price, sellerName: ai.company_name, sellerTier: ai.sellertier, deliveryDays: ai.delivery_days, quantity: 1 },
+      { type: "best_price", productId: best.product_id, productName: best.name, price: best.price, sellerName: best.company_name, sellerTier: best.sellertier, deliveryDays: best.delivery_days, quantity: 1 },
+      { type: "trusted_supplier", productId: trust.product_id, productName: trust.name, price: trust.price, sellerName: trust.company_name, sellerTier: trust.sellertier, deliveryDays: trust.delivery_days, quantity: 1 }
+    ], boq } });
+  } catch (err) { res.status(500).json({ success: false, error: "AI Engine Failure" }); }
 });
 
-/* --------------------------------
-CART MANAGEMENT
---------------------------------
-*/
+// CART LOGIC
 app.post("/api/cart/add", apiKeyMiddleware, async (req, res) => {
   try {
     const { userId, productId, sellerId, price } = req.body;
-    await pool.query(
-      `INSERT INTO cart_items (user_id, product_id, seller_id, price) VALUES ($1,$2,$3,$4)`,
-      [userId, productId, sellerId, price]
-    );
-    res.json({ success: true, message: "Item added to cart" });
-  } catch (error) {
-    console.error("Cart Add Error:", error);
-    res.status(500).json({ success: false, error: "Cart insert failed" });
-  }
+    await pool.query("INSERT INTO cart_items (user_id, product_id, seller_id, price) VALUES ($1,$2,$3,$4)", [userId, productId, sellerId, price]);
+    res.json({ success: true, message: "Item added" });
+  } catch (err) { res.status(500).json({ success: false, error: "Cart failed" }); }
 });
 
 app.get("/api/cart", apiKeyMiddleware, async (req, res) => {
   try {
     const { userId } = req.query;
-    const result = await pool.query(`SELECT * FROM cart_items WHERE user_id = $1`, [userId]);
+    const result = await pool.query("SELECT * FROM cart_items WHERE user_id = $1", [userId]);
     res.json({ success: true, cart: result.rows });
-  } catch (error) {
-    console.error("Cart Get Error:", error);
-    res.status(500).json({ success: false, error: "Cart retrieval failed" });
-  }
+  } catch (err) { res.status(500).json({ success: false, error: "Cart retrieval failed" }); }
 });
 
-app.listen(PORT, () => console.log(`SolarPV Backend running on port ${PORT}`));
+// START SERVER (THE RAILWAY FIX)
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`SolarPV Backend is live on port ${PORT}`);
+});
